@@ -1,0 +1,21 @@
+#!/usr/bin/env ruby
+$stdout.sync = true
+$stderr.sync = true
+
+require 'dotenv/load'
+require_relative '../lib/ticket_bot/core/configuration'
+require_relative '../lib/ticket_bot/engine'
+
+# Load correct client based on .env
+if ENV['PLATFORM'] == 'hubspot'
+  require_relative '../lib/ticket_bot/clients/hubspot_client'
+  client = TicketBot::HubspotClient.new(ENV['HUBSPOT_TOKEN'])
+else
+  require_relative '../lib/ticket_bot/clients/zoho_client'
+  require_relative '../lib/ticket_bot/authenticator'
+  auth = TicketBot::Authenticator.new
+  client = TicketBot::ZohoClient.new(TicketBot::Configuration.new, auth)
+end
+
+engine = TicketBot::Engine.new(TicketBot::Configuration.new, client)
+engine.run

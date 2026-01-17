@@ -1,0 +1,31 @@
+### --- Environment & Secrets ---
+# Never commit your actual credentials
+.env
+.env.*
+!.env.example
+
+# Third-party tool secrets in YAML
+# If your tool uses a specific name (e.g., config/tool_name.yml), list it specifically
+*.yml
+config/*.yml
+!config/*.example.yml
+
+### --- Ruby/Bundler ---
+# Ignore the local bundler cache and installed gems
+/vendor/bundle/
+.bundle/
+!bin/setup
+!bin/run
+
+### --- MVC Logs & Temporary Files ---
+# Standard log files
+log/*.log
+logs/
+# Temporary files (uploads, cache, pids)
+tmp/
+*.swp
+*.swo
+
+### --- OS Generated Files ---
+.DS_Store
+processed_tickets.db

@@ -8,14 +8,9 @@ module TicketBot
   class ZohoClient
     BASE_URL = 'https://desk.zoho.com/api/v1'
     MAX_RETRIES = 3
-    
     MAX_TICKETS_TO_FETCH = 100
     
-    # Statuses we do not want to process
-    IGNORED_STATUSES = [
-      "On Hold", 
-      "Closed"
-    ]
+    IGNORED_STATUSES = ["On Hold", "Closed"]
 
     def initialize(config, authenticator)
       @config = config
@@ -36,10 +31,9 @@ module TicketBot
     def get_organizations; get('/organizations'); end
     def get_views; get('/views?module=tickets'); end
 
-    # --- Single Ticket Fetch by Number ---
+    # --- Fetch Logic ---
     def fetch_ticket_by_number(ticket_number)
       TicketBot::Log.instance.info "   🔍 Searching for Ticket ##{ticket_number}..."
-      
       data = get("/tickets/search?ticketNumber=#{ticket_number}&limit=1")
 
       if data['data'].nil? || data['data'].empty?
@@ -47,22 +41,12 @@ module TicketBot
         return nil
       end
 
-      # Extract the first matching ticket
-      t = data['data'].first
-
-      TicketBot::Ticket.new(
-        id: t['id'],
-        number: t['ticketNumber'],
-        subject: t['subject'],
-        assignee_id: t['assigneeId'],
-        description: t['description']
-      )
+      map_ticket(data['data'].first)
     rescue StandardError => e
       TicketBot::Log.instance.error "   ❌ Failed to find ticket ##{ticket_number}: #{e.message}"
       nil
     end
 
-    # --- Core Fetch Logic ---
     def fetch_tickets(view_id)
       all_tickets = []
       from_index = 1
@@ -71,49 +55,63 @@ module TicketBot
       TicketBot::Log.instance.info "   🔄 Fetching tickets from View #{view_id}..."
 
       loop do
-        # Safety Break
         if all_tickets.size >= MAX_TICKETS_TO_FETCH
           TicketBot::Log.instance.warn "   ⚠️ Hit safety limit of #{MAX_TICKETS_TO_FETCH} tickets. Stopping fetch."
           break
         end
 
-        # Pagination Request
         url = "/tickets?viewId=#{view_id}&include=contacts&limit=#{limit}&from=#{from_index}"
         data = get(url)
         
-        # Stop if API returns nothing useful
         break unless data['data'] && !data['data'].empty?
 
-        # Process Batch
         batch = data['data'].map do |t|
-          # Filter: Status check
           next if IGNORED_STATUSES.include?(t['status'])
-
-          TicketBot::Ticket.new(
-            id: t['id'],
-            number: t['ticketNumber'],
-            subject: t['subject'],
-            assignee_id: t['assigneeId'],
-            description: t['description']
-          )
+          map_ticket(t)
         end.compact
 
         all_tickets.concat(batch)
-
-        # Pagination Logic
         break if data['data'].size < limit
         from_index += limit
       end
 
       TicketBot::Log.instance.info "   ✅ Fetched #{all_tickets.size} valid tickets."
       all_tickets
-
     rescue StandardError => e
       TicketBot::Log.instance.error "   ❌ Failed to fetch tickets: #{e.message}"
       []
     end
 
-    # --- Conversation Fetching (Threads + Comments) ---
+    def map_ticket(t)
+      TicketBot::Ticket.new(
+        id: t['id'],
+        number: t['ticketNumber'],
+        subject: t['subject'],
+        assignee_id: t['assigneeId'],
+        description: t['description'],
+        modified_time: t['modifiedTime'] #Capture the timestamp
+      )
+    end
+
+    # ---Check most recent activity type ---
+    def fetch_latest_thread(ticket_id)
+      data = get("/tickets/#{ticket_id}/latestThread")
+      
+      return nil unless data && data['id']
+
+      TicketBot::Message.new(
+        content: strip_html(data['summary']),
+        direction: data['direction'], 
+        channel: data['channel'],     
+        created_at: Time.parse(data['createdTime'])
+      )
+    rescue StandardError => e
+      # 404 means no threads exist yet
+      Log.instance.error "thread maybe doesn't exist yet: #{e}"
+      return nil
+    end
+
+    # --- Conversation Fetching ---
     def fetch_full_conversation(ticket_id)
       threads = fetch_threads(ticket_id)
       comments = fetch_comments(ticket_id)
@@ -129,7 +127,8 @@ module TicketBot
           raw_body = m['content'].nil? || m['content'].empty? ? m['summary'] : m['content']
           TicketBot::Message.new(
             content: strip_html(raw_body),
-            direction: m['direction'], 
+            direction: m['direction'],
+            channel: m['channel'], 
             created_at: Time.parse(m['createdTime'])
           )
         end
@@ -162,15 +161,9 @@ module TicketBot
       end
     end
 
-    # --- Posting Logic ---
     def post_private_comment(ticket_id, html_content)
       return if html_content.nil? || html_content.strip.empty?
-      
-      post("/tickets/#{ticket_id}/comments", { 
-        isPublic: false, 
-        content: html_content,
-        contentType: "html" 
-      })
+      post("/tickets/#{ticket_id}/comments", { isPublic: false, content: html_content, contentType: "html" })
     rescue StandardError => e
       TicketBot::Log.instance.error "   ❌ Failed to post comment on #{ticket_id}: #{e.message}"
     end

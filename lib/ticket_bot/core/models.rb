@@ -6,6 +6,7 @@ module TicketBot
     :subject,       # The issue title
     :assignee_id,   # Who owns it
     :description,   # Initial content
+    :modified_time,   
     keyword_init: true
   )
 
@@ -13,6 +14,7 @@ module TicketBot
   Message = Struct.new(
     :content,       # The text body
     :direction,     # 'in' (customer) or 'out' (agent)
+    :channel,       # [NEW] 'EMAIL', 'WEB', 'API', etc.
     :created_at,    
     keyword_init: true
   )

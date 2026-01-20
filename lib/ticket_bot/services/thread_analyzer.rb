@@ -54,7 +54,7 @@ module TicketBot
       logs = sorted.last(HISTORY_LIMIT).map do |m|
         next if m.content && m.content.include?("Context Summary")
         sender = m.direction == 'in' ? "CUSTOMER" : "AGENT"
-        time = m.created_at.strftime('%m/%d %H:%M')
+        time = m.created_at.strftime('%Y-%m-%d %H:%M')
         clean_body = strip_html(m.content).gsub(/\s+/, ' ').strip[0..500]
         "[#{time}] #{sender}: #{clean_body}"
       end

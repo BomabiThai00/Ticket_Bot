@@ -5,6 +5,16 @@ $stderr.sync = true
 require 'dotenv/load'
 require_relative '../lib/ticket_bot/core/configuration'
 require_relative '../lib/ticket_bot/engine'
+if ARGV.include?('--force_update')
+  ENV['FORCE_UPDATE'] = 'true'
+  # Remove it from ARGV so it doesn't get mistaken for the ID
+  ARGV.delete('--force_update') 
+end
+
+# 2. Capture the Ticket Number (First remaining argument)
+if ARGV[0] && !ARGV[0].start_with?('--')
+  ENV['SINGLE_TICKET_NUMBER'] = ARGV[0]
+end
 
 # Load correct client based on .env
 if ENV['PLATFORM'] == 'hubspot'

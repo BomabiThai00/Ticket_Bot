@@ -23,6 +23,30 @@ module TicketBot
     end
 
     def run
+      # --- Single Ticket Mode (By Number) ---
+      if ENV['SINGLE_TICKET_NUMBER']
+        number = ENV['SINGLE_TICKET_NUMBER']
+        Log.instance.info "🚀 Single Ticket Mode Active for Ticket Number: #{number}"
+        
+        should_force = ENV['FORCE_UPDATE'] == 'true'
+        Log.instance.info "   ⚡ Force Update: ENABLED (Bypassing DB check)" if should_force
+
+        # This will fetch the ticket and internally map the correct ID
+        ticket = @client.fetch_ticket_by_number(number)
+
+        if ticket
+          # Process synchronously to ensure completion before exit
+          process_ticket_async(ticket, force_update: should_force)
+          Log.instance.info "👋 Single run complete."
+
+        else
+          Log.instance.error "❌ Could not retrieve ticket with number: #{number}"
+        end
+
+        return # Exit immediately
+      end
+
+      # --- Standard Polling Mode ---
       bootstrap_configuration unless configured?
       Log.instance.info "🤖 Bot Online. Agent ID: #{@config[:my_agent_id]}"
       Log.instance.info "   - Concurrency: #{CONCURRENCY_LIMIT} Threads"
@@ -82,16 +106,12 @@ module TicketBot
     end
 
     def check_cycle
-      # fetch_tickets returns [TicketBot::Ticket] or []
       tickets = @client.fetch_tickets(@config[:view_id]) || []
       
       tickets.each do |ticket|
-        # OPTIONAL: Uncomment to process only your own tickets
+
         next if ticket.assignee_id != @config[:my_agent_id]
 
-        # Dispatch to worker pool
-        # We do NOT check tracker here because we need to fetch threads first
-        # to know the count. That network call should happen asynchronously.
         @pool.post { process_ticket_async(ticket) }
       end
     rescue StandardError => e
@@ -99,28 +119,28 @@ module TicketBot
       Log.instance.error e.backtrace.join("\n")
     end
 
-    def process_ticket_async(ticket)
-      # 1. Fetch current context (Network Call)
+    def process_ticket_async(ticket, force_update: false)
+      # 1. Fetch threads using the ID (which was populated by fetch_ticket_by_number)
       messages = @client.fetch_threads(ticket.id)
       current_count = messages.size
 
-      # 2. Tracker Logic: Should we skip?
-      #    Now passes 'current_count' to check the Delta < 5 rule
-      if @tracker.should_skip?(ticket.id, current_count)
-        # Log.instance.debug "   zzz Skipping #{ticket.number} (Insufficient new data)"
-        return
+      # 2. Tracker Logic
+      unless force_update
+        if @tracker.should_skip?(ticket.id, current_count)
+          Log.instance.info("Ticket #{ticket.number} has already been processed, bouncing back...")
+          return
+        end
       end
 
       Log.instance.info "🔥 Processing #{ticket.number} (Count: #{current_count})..."
 
-      # 3. Analyze (AI / Computation)
+      # 3. Analyze
       analysis = @analyzer.analyze(ticket, messages)
       
-      # 4. Post Result (Network Call)
+      # 4. Post Result
       @client.post_private_comment(ticket.id, analysis)
       
-      # 5. Commit state to DB
-      #    Only update if analysis and posting succeeded
+      # 5. Commit state
       @tracker.update_tracking(ticket.id, current_count)
       
       Log.instance.info "   ✅ Updated #{ticket.number}"

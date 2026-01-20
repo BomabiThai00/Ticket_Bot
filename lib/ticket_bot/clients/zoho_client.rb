@@ -36,7 +36,33 @@ module TicketBot
     def get_organizations; get('/organizations'); end
     def get_views; get('/views?module=tickets'); end
 
-    # --- Core Fetch Logic (Refactored) ---
+    # --- Single Ticket Fetch by Number ---
+    def fetch_ticket_by_number(ticket_number)
+      TicketBot::Log.instance.info "   🔍 Searching for Ticket ##{ticket_number}..."
+      
+      data = get("/tickets/search?ticketNumber=#{ticket_number}&limit=1")
+
+      if data['data'].nil? || data['data'].empty?
+        TicketBot::Log.instance.error "   ❌ Ticket ##{ticket_number} not found."
+        return nil
+      end
+
+      # Extract the first matching ticket
+      t = data['data'].first
+
+      TicketBot::Ticket.new(
+        id: t['id'],
+        number: t['ticketNumber'],
+        subject: t['subject'],
+        assignee_id: t['assigneeId'],
+        description: t['description']
+      )
+    rescue StandardError => e
+      TicketBot::Log.instance.error "   ❌ Failed to find ticket ##{ticket_number}: #{e.message}"
+      nil
+    end
+
+    # --- Core Fetch Logic ---
     def fetch_tickets(view_id)
       all_tickets = []
       from_index = 1
@@ -74,7 +100,7 @@ module TicketBot
 
         all_tickets.concat(batch)
 
-        # Pagination Logic: If we got fewer results than limit, we are done.
+        # Pagination Logic
         break if data['data'].size < limit
         from_index += limit
       end
@@ -84,7 +110,6 @@ module TicketBot
 
     rescue StandardError => e
       TicketBot::Log.instance.error "   ❌ Failed to fetch tickets: #{e.message}"
-      # Always return an empty array on error, never nil
       []
     end
 
@@ -92,8 +117,6 @@ module TicketBot
     def fetch_full_conversation(ticket_id)
       threads = fetch_threads(ticket_id)
       comments = fetch_comments(ticket_id)
-      
-      # Merge and Sort Chronologically
       (threads + comments).sort_by(&:created_at)
     end
 
@@ -104,7 +127,6 @@ module TicketBot
 
         data['data'].map do |m|
           raw_body = m['content'].nil? || m['content'].empty? ? m['summary'] : m['content']
-          
           TicketBot::Message.new(
             content: strip_html(raw_body),
             direction: m['direction'], 
@@ -123,11 +145,8 @@ module TicketBot
         return [] unless data['data']
 
         data['data'].map do |c|
-          # Determine Sender: 'endUser' = Customer (in), 'agentUser' = Agent (out)
           type = c.dig('commenter', 'type')
           direction = (type == 'endUser') ? 'in' : 'out'
-          
-          # Add label so AI knows this is a comment/note
           label = c['isPublic'] ? "💬 [Public Comment]" : "🔒 [Private Note]"
           raw_body = c['content']
           
@@ -147,7 +166,6 @@ module TicketBot
     def post_private_comment(ticket_id, html_content)
       return if html_content.nil? || html_content.strip.empty?
       
-      # Send as 'html' so Zoho renders tags like <b> and <ul>
       post("/tickets/#{ticket_id}/comments", { 
         isPublic: false, 
         content: html_content,

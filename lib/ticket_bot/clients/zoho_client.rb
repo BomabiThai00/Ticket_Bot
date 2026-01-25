@@ -187,19 +187,28 @@ module TicketBot
     end
 
     def handle_response(response)
+      # 1. Handle Empty Responses (204 No Content) gracefully
+      if response.body.nil? || response.body.strip.empty?
+        return {} 
+      end
+
+      # 2. Handle Authentication Errors
       if response.status == 401
         TicketBot::Log.instance.warn "⚠️  401 Unauthorized. Token expired/revoked. Forcing refresh..."
-        
-        # 1. Force the authenticator to refresh (We need to bypass the expiry check)
-        # Note: You may need to expose a public 'refresh!' method in Authenticator.rb
-        @auth.send(:refresh_access_token!) 
-        
-        # 2. Raise a specific retryable error that 'with_retries' can catch
-        raise Faraday::ServerError.new("Token Refreshed - Retrying") 
+        @auth.send(:refresh_access_token!)
+        raise Faraday::ServerError.new("Token Refreshed - Retrying")
       elsif !response.success?
-        raise "Zoho API Error: #{response.status} - #{response.body}"
+        TicketBot::Log.instance.error "❌ API Error #{response.status}: #{response.body}"
+        raise "Zoho API Error: #{response.status}"
       end
-      JSON.parse(response.body)
+
+      # 3. Safe Parse
+      begin
+        JSON.parse(response.body)
+      rescue JSON::ParserError => e
+        TicketBot::Log.instance.error "❌ Failed to parse JSON: #{e.message}"
+        return {}
+      end
     end
 
     def with_retries

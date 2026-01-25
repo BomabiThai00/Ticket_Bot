@@ -4,7 +4,7 @@ require_relative 'logger'
 
 module TicketBot
   class Tracker
-    DB_FILE = File.expand_path('../../../processed_tickets.db', __dir__)
+    DB_FILE =  DB_FILE = ENV['DB_PATH'] || File.expand_path('../../../processed_tickets.db', __dir__)
     
     # Retry settings for when database is locked 
     MAX_RETRIES = 5

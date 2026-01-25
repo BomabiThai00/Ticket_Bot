@@ -52,7 +52,7 @@ module TicketBot
       bootstrap_configuration unless configured?
       Log.instance.info "🤖 Bot Online. Agent ID: #{@config[:my_agent_id]}"
       Log.instance.info "   - Concurrency: #{CONCURRENCY_LIMIT} Threads"
-      Log.instance.info "   - Tracker: Incremental Mode (WAL Enabled)"
+      Log.instance.info "   - Tracker: Email-Only Volume Strategy"
       Log.instance.info "   - Cache: LRU Strategy (Limit: #{CACHE_LIMIT})"
 
       loop do
@@ -119,47 +119,48 @@ module TicketBot
 
     def process_ticket_async(ticket, force_update: false)
       # 1. L1 Cache: Check & Refresh LRU position
-      #    If the timestamp matches what we have in memory, we skip INSTANTLY.
       if !force_update && check_and_refresh_cache(ticket.id, ticket.modified_time)
         return 
       end
 
-      # 2. Robust Check: Latest Thread Analysis
-      #    Before fetching all threads, check if the latest update was a Customer Email.
+      # 2. Robust Check: Last Email must be from Customer
       unless force_update
         latest = @client.fetch_latest_thread(ticket.id)
         
-        # If no threads, or the update was an Agent Reply or System Note...
+        # Guard: If latest thread is missing, or is Outgoing (Agent), or not Email -> SKIP
         if latest.nil? || latest.direction != 'in' || latest.channel != 'EMAIL'
-          # We update the cache so we don't check this ticket again until it changes
           update_cache(ticket.id, ticket.modified_time)
           return
         end
       end
 
-      # 3. Fetch Full Threads
-      messages = @client.fetch_threads(ticket.id)
-      current_count = messages.size
+      # 3. Fetch Full Context (Emails + Notes)
+      messages = @client.fetch_full_conversation(ticket.id)
+      
+      # ⚠️ LOGIC CHANGE: Filter to count ONLY Emails (exclude private notes)
+      # We rely on 'channel' being populated for threads (EMAIL) and nil for comments.
+      email_count = messages.count { |m| m.channel == 'EMAIL' }
 
       # 4. Tracker Logic (L2 DB Check)
-      #    Final safeguard: do we have enough *new* messages?
+      # Check if we have 5+ *new emails* since last run.
       unless force_update
-        if @tracker.should_skip?(ticket.id, current_count)
+        if @tracker.should_skip?(ticket.id, email_count)
           update_cache(ticket.id, ticket.modified_time)
           return
         end
       end
 
-      Log.instance.info "🔥 Processing #{ticket.number} (Count: #{current_count})..."
+      Log.instance.info "🔥 Processing #{ticket.number} (Emails: #{email_count} | Total Context: #{messages.size})..."
 
       # 5. Analyze
+      # We pass ALL messages (including notes) so the AI has full context
       analysis = @analyzer.analyze(ticket, messages)
       
       # 6. Post Result
       @client.post_private_comment(ticket.id, analysis)
       
-      # 7. Commit state & Update Cache
-      @tracker.update_tracking(ticket.id, current_count)
+      # 7. Commit state (Save the EMAIL count, not total count)
+      @tracker.update_tracking(ticket.id, email_count)
       update_cache(ticket.id, ticket.modified_time)
       
       Log.instance.info "   ✅ Updated #{ticket.number}"
@@ -172,7 +173,6 @@ module TicketBot
     def check_and_refresh_cache(id, time)
       @cache_lock.synchronize do
         if @processed_cache[id] == time
-          # LRU Logic: "Use" the item by moving it to the end (Delete & Re-insert)
           @processed_cache.delete(id)
           @processed_cache[id] = time
           return true

@@ -1,22 +1,13 @@
 require 'json'
+require 'loofah' # High-performance HTML stripping
 require_relative '../core/logger'
 require_relative 'pii_sanitizer'
+require_relative '../prompts/support_engineer'
 
 module TicketBot
   class ThreadAnalyzer
-    HISTORY_LIMIT = 100 
-
-    # Define standard Root Cause categories
-    RCA_CATEGORIES = [
-      "Software Bug", 
-      "User Error / Education", 
-      "Feature Request", 
-      "Configuration Issue", 
-      "Network / Infrastructure", 
-      "Billing / Account",
-      "Third-Party Integration",
-      "Undetermined"
-    ]
+    HISTORY_CHAR_LIMIT = 15_000 
+    BOT_SIGNATURE = "Context Summary"
 
     def initialize(llm_client, api_client)
       @llm = llm_client
@@ -24,119 +15,126 @@ module TicketBot
     end
 
     def analyze(ticket, messages)
-      # 1. FIND CONTEXT
-      previous_summary = find_last_ai_note(messages)
-      
-      # 2. SANITIZE
+      # 1. Sort once.
+      # We receive a mix of threads and comments. We ensure they are perfectly linear.
+      sorted_msgs = messages.sort_by(&:created_at)
+
+      # 2. EXTRACT STATE
+      # efficiently scan backwards for the last JSON payload
+      previous_json_state = extract_state_from_history(sorted_msgs)
+
+      # 3. PREPARE DATA
       safe_subject = PiiSanitizer.scrub(ticket.subject || "No Subject")
-      raw_log = build_conversation_log(messages)
-      sanitized_log = PiiSanitizer.scrub(raw_log)
+      transcript = build_clean_transcript(sorted_msgs)
 
-      # 3. CALL AZURE
-      Log.instance.info "   🤖 Analyzing Ticket #{ticket.number} (Timeline & RCA Mode)..."
-      analysis_hash = generate_incremental_summary(safe_subject, sanitized_log, previous_summary)
+      # 4. BUILD PROMPT
+      prompt_builder = TicketBot::Prompts::SupportEngineer.new(
+        safe_subject, 
+        transcript, 
+        previous_json_state
+      )
+      
+      Log.instance.info "   🤖 Analyzing Ticket #{ticket.number} (Mode: #{previous_json_state ? 'Update' : 'Fresh'})..."
 
-      # 4. FORMAT AS HTML
-      format_summary_note(analysis_hash)
+      # 5. EXECUTE LLM
+      raw_response = @llm.generate_response(prompt_builder.build, json_mode: true, temperature: 0.1)
+      return if raw_response.nil?
+
+      begin
+        analysis_data = JSON.parse(raw_response)
+        
+        # 6. GENERATE HTML NOTE
+        format_summary_note(analysis_data)
+      rescue JSON::ParserError => e
+        Log.instance.error "   ❌ Failed to parse LLM JSON: #{e.message}"
+        nil
+      end
     end
 
     private
 
-    def find_last_ai_note(messages)
-      ai_msg = messages.reverse.find do |m| 
-        m.content && m.content.include?("<b>Context Summary</b>")
+    def extract_state_from_history(sorted_messages)
+      # Reverse iterator avoids duplicating the array
+      sorted_messages.reverse_each do |m|
+        # We only care about notes posted by THIS bot
+        next unless m.content && m.content.include?("<b>#{BOT_SIGNATURE}</b>")
+        
+        # Extract the hidden JSON block
+        match = m.content.match(//m)
+        return match[1].strip if match
       end
-      ai_msg ? strip_html(ai_msg.content) : nil
+      nil
     end
 
-    def build_conversation_log(messages)
-      sorted = messages.sort_by { |m| m.created_at }
-      logs = sorted.last(HISTORY_LIMIT).map do |m|
-        next if m.content && m.content.include?("Context Summary")
+    def build_clean_transcript(sorted_messages)
+      buffer = []
+      
+      sorted_messages.each do |m|
+        # Skip our own summaries to prevent recursive context loops
+        next if m.content && m.content.include?(BOT_SIGNATURE)
+
         sender = m.direction == 'in' ? "CUSTOMER" : "AGENT"
+        
+        # Add a visual indicator if this is a Private Note
+        if m.channel != 'EMAIL'
+           sender += " (INTERNAL NOTE)" 
+        end
+
         time = m.created_at.strftime('%Y-%m-%d %H:%M')
-        clean_body = strip_html(m.content).gsub(/\s+/, ' ').strip[0..500]
-        "[#{time}] #{sender}: #{clean_body}"
+        
+        # OPTIMIZATION: Loofah is C-based and much safer/faster than Regex
+        raw_text = Loofah.fragment(m.content.to_s).text(encode_special_chars: false)
+        
+        # Scrub PII
+        clean_body = PiiSanitizer.scrub(raw_text).strip.gsub(/\s+/, ' ')
+
+        buffer << "[#{time}] #{sender}: #{clean_body}"
       end
-      logs.compact.empty? ? "[No readable text]" : logs.compact.join("\n")
-    end
 
-    def generate_incremental_summary(subject, log, old_summary)
-      context_block = old_summary ? 
-        "--- PREVIOUS TIMELINE ---\n#{old_summary}\nINSTRUCTION: Append new events to this history." : 
-        "INSTRUCTION: Create a fresh timeline from scratch."
-
-      prompt = <<~PROMPT
-        You are a Senior QA Lead.
-        #{context_block}
-        
-        --- HISTORY ---
-        Subject: #{subject}
-        #{log}
-        
-        INSTRUCTIONS:
-        1. Analyze the technical root cause.
-        2. Categorize into EXACTLY ONE of: #{RCA_CATEGORIES.join(', ')}.
-        3. Generate 3-5 distinct tags (e.g., error codes, feature names).
-        4. Identify the immediate next step.
-        5. **Crucial:** In 'timeline_events', list EVERY significant event, status change, or key fact in chronological order. Do not summarize broadly; be specific. Add as many points as necessary to capture the full story.
-
-        OUTPUT JSON:
-        { 
-          "timeline_events": ["YYYY-MM-DD - Who: Detail of what happened", "... (add all events found)"], 
-          "root_cause_analysis": {
-            "category": "One of the defined categories",
-            "reasoning": "Brief explanation why",
-            "suggested_tags": ["tag1", "tag2", "tag3"]
-          },
-          "next_step": { "owner": "Role", "action": "Action" },
-          "sentiment_score": 0 
-        }
-      PROMPT
-
-      response = @llm.generate_response(prompt, json_mode: true, temperature: 0.1) 
-      JSON.parse(response)
+      # Truncate if we exceed the context window
+      full_text = buffer.join("\n")
+      if full_text.length > HISTORY_CHAR_LIMIT
+        "...(older logs truncated)...\n" + full_text[(-HISTORY_CHAR_LIMIT)..-1]
+      else
+        full_text
+      end
     end
 
     def format_summary_note(data)
-      score = data['sentiment_score'].to_i
-      mood = score > 70 ? "🔥 HIGH URGENCY" : "✅ Normal"
-      
-      # FIX: Now utilizing the 'events' variable correctly
-      events = Array(data['timeline_events']).map { |e| "<li>#{e}</li>" }.join
-      
       rca = data['root_cause_analysis'] || {}
-      category = rca['category'] || "Undetermined"
-      reasoning = rca['reasoning'] || "No analysis provided."
-      tags = Array(rca['suggested_tags']).map { |t| "<code>#{t}</code>" }.join(" ")
+      next_step = data['next_step'] || {}
+      sentiment = data['sentiment'] || {}
+      timeline = data['timeline_events'] || []
 
-      next_owner = data.dig('next_step', 'owner') || "Unassigned"
-      next_action = data.dig('next_step', 'action') || "Review ticket"
+      status_icon = (sentiment['current_score'].to_i < 40) ? "🔴 CRITICAL" : "🟢 STABLE"
+      timeline_html = timeline.map { |e| "<li>#{e}</li>" }.join
+      
+      # We embed the JSON state secretly at the bottom for the next run
+      json_payload = ""
 
-      # HTML: 'Timeline' replaces 'Executive Summary'
       <<~HTML
-        <b>Context Summary</b><br>
-        ---------------------------------<br>
-        <b>Status:</b> #{mood}<br>
-        <b>Root Cause:</b> #{category}<br><br>
+        <b>#{BOT_SIGNATURE}</b> | #{status_icon}<br>
+        --------------------------------------------------<br>
         
-        <b>Timeline & Key Facts:</b>
-        <ul>#{events}</ul>
-        
-        <b>Technical Analysis:</b><br>
-        <i>#{reasoning}</i><br>
-        <b>Tags:</b> #{tags}<br><br>
-        
-        <b>Next Steps:</b><br>
-        <b>Owner:</b> #{next_owner}<br>
-        <b>Action:</b> #{next_action}<br>
-        ---------------------------------
-      HTML
-    end
+        <b>🔍 Root Cause Analysis</b><br>
+        <b>Category:</b> #{rca['category']} (#{rca['confidence_score']}%)<br>
+        <b>Reasoning:</b> <i>#{rca['technical_reasoning']}</i><br>
+        #{rca['evidence_quote'] ? "<b>Evidence:</b> \"#{rca['evidence_quote']}\"<br>" : ''}
+        <br>
 
-    def strip_html(html)
-      return "" if html.nil?
-      html.to_s.gsub(/<[^>]*>/, " ").gsub(/\s+/, " ").strip
+        <b>⏭️ Next Steps</b><br>
+        <b>Owner:</b> #{next_step['owner']}<br>
+        <b>Action:</b> #{next_step['action']} #{next_step['is_blocked'] ? '(⛔ BLOCKED)' : ''}<br>
+        <br>
+
+        <b>📅 Technical Timeline</b>
+        <ul>#{timeline_html}</ul>
+
+        <div style="font-size: 10px; color: #888;">
+          Frustration Velocity: #{sentiment['frustration_velocity']}
+        </div>
+        #{json_payload}
+      HTML
     end
   end
 end

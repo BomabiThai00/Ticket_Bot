@@ -29,3 +29,4 @@ tmp/
 ### --- OS Generated Files ---
 .DS_Store
 *.db
+*.db*

@@ -48,6 +48,8 @@ module TicketBot
             1. Read the Transcript below.
             2. Build a complete chronological timeline of technical events.
             3. Assess the initial Root Cause based on available evidence.
+            4. If steps provided from Support Engineer to Customer, add them accordingly(support provided steps to its relevant field, and customer response to this peice of instruction).
+            5. If customer was asked to perform a step, and they didn't, add that in the 'next_step' section. 
           TASK
         else
           <<~TASK
@@ -62,8 +64,9 @@ module TicketBot
             2. Read the INPUT TRANSCRIPT (New messages).
             3. Append new significant events to the 'timeline_events'.
             4. Re-evaluate the 'root_cause_analysis' and 'sentiment'. Has the issue changed?
-            5. Update the 'next_step' based on the latest interaction.
-            6. Do not summarize broadly; be specific. Add as many points as necessary to capture the full story.
+            5. Update the 'next_step' based on the latest interactions.
+            6. Be verbose in the timeline. Do not truncate technical details. List every troubleshooting step mentioned.; be specific. Add as many points as necessary to capture the full story.
+            7. If customer was asked to perform a step, and they didn't, add that in the 'next_step' section. 
           TASK
         end
       end

@@ -21,6 +21,7 @@ GEM
     nokogiri (1.19.0-x86_64-darwin)
       racc (~> 1.4)
     racc (1.8.1)
+    sqlite3 (2.9.0-x86_64-darwin)
     uri (1.1.1)
     webrick (1.9.2)
 
@@ -33,6 +34,7 @@ DEPENDENCIES
   dotenv
   faraday
   loofah
+  sqlite3
   webrick
 
 CHECKSUMS
@@ -48,6 +50,7 @@ CHECKSUMS
   net-http (0.8.0) sha256=df42c47ce9f9e95ad32a317c97c12f945bc1af365288837ea4ff259876ecb46d
   nokogiri (1.19.0-x86_64-darwin) sha256=1dad56220b603a8edb9750cd95798bffa2b8dd9dd9aa47f664009ee5b43e3067
   racc (1.8.1) sha256=4a7f6929691dbec8b5209a0b373bc2614882b55fc5d2e447a21aaa691303d62f
+  sqlite3 (2.9.0-x86_64-darwin) sha256=59fe51baa3cb33c36d27ce78b4ed9360cd33ccca09498c2ae63850c97c0a6026
   uri (1.1.1) sha256=379fa58d27ffb1387eaada68c749d1426738bd0f654d812fcc07e7568f5c57c6
   webrick (1.9.2) sha256=beb4a15fc474defed24a3bda4ffd88a490d517c9e4e6118c3edce59e45864131
 

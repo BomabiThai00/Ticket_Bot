@@ -6,11 +6,16 @@ require_relative '../core/models'
 
 module TicketBot
   class ZohoClient
-    BASE_URL = 'https://desk.zoho.com/api/v1'
+    # BASE_URL = 'https://desk.zoho.com/api/v1'
     MAX_RETRIES = 3
     MAX_TICKETS_TO_FETCH = 100
     
     IGNORED_STATUSES = ["On Hold", "Closed"]
+    
+    def base_url
+      tld = ENV['ZOHO_TOP_LEVEL_DOMAIN'] || 'com'
+      "https://desk.zoho.#{tld}/api/v1"
+    end
 
     def initialize(config, authenticator)
       @config = config
@@ -18,7 +23,7 @@ module TicketBot
     end
 
     def connection
-      Faraday.new(url: BASE_URL, ssl: { verify: false }) do |f|
+      Faraday.new(url: base_url, ssl: { verify: false }) do |f|
         f.headers['Authorization'] = "Zoho-oauthtoken #{@auth.access_token}"
         f.headers['orgId'] = @config[:org_id].to_s if @config[:org_id]
         f.headers['Content-Type'] = 'application/json'
@@ -47,20 +52,20 @@ module TicketBot
       nil
     end
 
-    def fetch_tickets(view_id)
+    def fetch_tickets(my_agent_id)
       all_tickets = []
       from_index = 1
       limit = 50
 
-      TicketBot::Log.instance.info "   🔄 Fetching tickets from View #{view_id}..."
+      TicketBot::Log.instance.info "   🔄 Fetching tickets for Agent ID #{my_agent_id}..."
 
       loop do
         if all_tickets.size >= MAX_TICKETS_TO_FETCH
           TicketBot::Log.instance.warn "   ⚠️ Hit safety limit of #{MAX_TICKETS_TO_FETCH} tickets. Stopping fetch."
           break
         end
-
-        url = "/tickets?viewId=#{view_id}&include=contacts&limit=#{limit}&from=#{from_index}"
+        url = "/tickets?assignee=#{my_agent_id}&status=Open&include=contacts&limit=50"
+        # url = "/tickets?viewId=#{agent_id}&include=contacts&limit=#{limit}&from=#{from_index}"
         data = get(url)
         
         break unless data['data'] && !data['data'].empty?
@@ -171,20 +176,26 @@ module TicketBot
     private
 
     def get(path)
-      with_retries { handle_response(connection.get(BASE_URL + path)) }
+      with_retries { handle_response(connection.get(base_url + path)) }
     end
 
     def post(path, body)
       with_retries do
-        resp = connection.post(BASE_URL + path) { |req| req.body = body.to_json }
+        resp = connection.post(base_url + path) { |req| req.body = body.to_json }
         handle_response(resp)
       end
     end
 
     def handle_response(response)
       if response.status == 401
-        TicketBot::Log.instance.error "⚠️  401 Unauthorized. Token expired."
-        raise "Zoho Auth Error: 401"
+        TicketBot::Log.instance.warn "⚠️  401 Unauthorized. Token expired/revoked. Forcing refresh..."
+        
+        # 1. Force the authenticator to refresh (We need to bypass the expiry check)
+        # Note: You may need to expose a public 'refresh!' method in Authenticator.rb
+        @auth.send(:refresh_access_token!) 
+        
+        # 2. Raise a specific retryable error that 'with_retries' can catch
+        raise Faraday::ServerError.new("Token Refreshed - Retrying") 
       elsif !response.success?
         raise "Zoho API Error: #{response.status} - #{response.body}"
       end

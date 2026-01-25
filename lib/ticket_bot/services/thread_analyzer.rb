@@ -33,7 +33,8 @@ module TicketBot
         transcript, 
         previous_json_state
       )
-      
+      prompt = prompt_builder.build
+      Log.instance.info "🔎 Prompt Size: #{prompt.length} chars"
       Log.instance.info "   🤖 Analyzing Ticket #{ticket.number} (Mode: #{previous_json_state ? 'Update' : 'Fresh'})..."
 
       # 5. EXECUTE LLM
@@ -84,7 +85,7 @@ module TicketBot
         
         # OPTIMIZATION: Loofah is C-based and much safer/faster than Regex
         raw_text = Loofah.fragment(m.content.to_s).text(encode_special_chars: false)
-        
+
         # Scrub PII
         clean_body = PiiSanitizer.scrub(raw_text).strip.gsub(/\s+/, ' ')
 
@@ -98,6 +99,7 @@ module TicketBot
       else
         full_text
       end
+
     end
 
     def format_summary_note(data)

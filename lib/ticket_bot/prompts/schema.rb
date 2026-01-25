@@ -24,7 +24,7 @@ module TicketBot
             "evidence_quote" => "Direct quote from the transcript supporting this conclusion (or null if none)."
           },
           "timeline_events" => [
-            "YYYY-MM-DD [Who]: Specific technical event or status change (e.g., 'Logs uploaded', 'Error 500 reported')."
+            "YYYY-MM-DD [Who]: Specific technical event, new information from customer about the issue, or status change (e.g., 'Logs uploaded', 'Error 500 reported', ....)."
           ],
           "next_step" => {
             "owner" => "Support, Engineering, Carriers, Compliance,  or Customer",

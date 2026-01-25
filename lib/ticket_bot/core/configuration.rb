@@ -31,7 +31,6 @@ module TicketBot
       # 1. Define strictly the keys you care about
       defaults = {
         org_id: nil,
-        view_id: nil,
         my_agent_id: nil
       }
 

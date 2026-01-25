@@ -37,7 +37,6 @@ module TicketBot
     end
 
     def should_skip?(ticket_id, current_thread_count)
-      # We assume the DB is available. If it fails after retries, we defaults to FALSE (Process it).
       begin
         row = execute_with_retry do
           @db.get_first_row(
@@ -46,13 +45,19 @@ module TicketBot
           )
         end
 
-        return false if row.nil?
+        if row.nil?
+           Log.instance.info "      [Tracker] New Ticket (Not in DB). Processing."
+           return false
+        end
 
         last_count = row['last_thread_count'].to_i
-        (current_thread_count - last_count) < 5
+        diff = current_thread_count - last_count
+        
+        Log.instance.info "      [Tracker] Email Delta: #{diff} (New: #{current_thread_count}, Old: #{last_count}). Need 5."
 
+        diff < 5
       rescue StandardError => e
-        Log.instance.error "⚠️ Tracker Read Failed (Ticket #{ticket_id}): #{e.message}. Defaulting to PROCESS."
+        Log.instance.error "⚠️ Tracker Read Failed: #{e.message}"
         false
       end
     end

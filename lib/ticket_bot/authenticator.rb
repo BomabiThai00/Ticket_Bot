@@ -5,8 +5,13 @@ require_relative 'core/logger'
 
 module TicketBot
   class Authenticator
-    TOKEN_URL = 'https://accounts.zoho.com/oauth/v2/token'
+    # TOKEN_URL = 'https://accounts.zoho.com/oauth/v2/token'
     ENV_FILE_PATH = './.env'
+
+    def self.token_url
+      tld = ENV['ZOHO_TOP_LEVEL_DOMAIN'] || 'com'
+      "https://accounts.zoho.#{tld}/oauth/v2/token"
+    end
 
     def initialize
       @client_id = ENV['ZOHO_CLIENT_ID']
@@ -60,7 +65,7 @@ module TicketBot
     def refresh_access_token!
       Log.instance.info "🔄 Refreshing Zoho Access Token..."
 
-      conn = Faraday.new(url: TOKEN_URL, ssl: { verify: false })
+      conn = Faraday.new(url: self.class.token_url, ssl: { verify: false })
       
       response = conn.post do |req|
         req.body = {

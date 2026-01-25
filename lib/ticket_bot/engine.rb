@@ -10,7 +10,7 @@ require_relative 'services/thread_analyzer'
 
 module TicketBot
   class Engine
-    TARGET_VIEW_NAME = "Open Cases"
+    TARGET_VIEW_NAME = "My Open Tickets"
     CONCURRENCY_LIMIT = 1
     
     # Bounded Cache
@@ -81,17 +81,6 @@ module TicketBot
         Log.instance.info "   ✅ Org Set: #{@config[:org_id]}"
       end
 
-      views = @client.get_views
-      target = views['data']&.find { |v| v['name'].downcase == TARGET_VIEW_NAME.downcase }
-      
-      if target
-        @config[:view_id] = target['id']
-        Log.instance.info "   ✅ View Set: #{target['id']}"
-      else
-        Log.instance.error "❌ View '#{TARGET_VIEW_NAME}' not found."
-        exit(1)
-      end
-
       my_info = @client.get_my_info
       id = my_info['id']
       name = my_info['firstName']
@@ -106,7 +95,7 @@ module TicketBot
     end
 
     def check_cycle
-      tickets = @client.fetch_tickets(@config[:view_id]) || []
+      tickets = @client.fetch_tickets(@config[:my_agent_id]) || []
       
       tickets.each do |ticket|
         next if ticket.assignee_id != @config[:my_agent_id]
@@ -120,6 +109,7 @@ module TicketBot
     def process_ticket_async(ticket, force_update: false)
       # 1. L1 Cache: Check & Refresh LRU position
       if !force_update && check_and_refresh_cache(ticket.id, ticket.modified_time)
+        Log.instance.info "   ⏭️  Skipping #{ticket.number}: In-Memory Cache Hit (No changes detected)."
         return 
       end
 
@@ -127,8 +117,23 @@ module TicketBot
       unless force_update
         latest = @client.fetch_latest_thread(ticket.id)
         
-        # Guard: If latest thread is missing, or is Outgoing (Agent), or not Email -> SKIP
-        if latest.nil? || latest.direction != 'in' || latest.channel != 'EMAIL'
+        # Guard 1: No messages at all
+        if latest.nil?
+          Log.instance.info "   ⏭️  Skipping #{ticket.number}: No thread/messages found (Empty Ticket)."
+          update_cache(ticket.id, ticket.modified_time)
+          return
+        end
+
+        # Guard 2: Last message was outgoing (Agent replied already)
+        if latest.direction != 'in'
+          Log.instance.info "   ⏭️  Skipping #{ticket.number}: Last message was from AGENT (Waiting for customer reply)."
+          update_cache(ticket.id, ticket.modified_time)
+          return
+        end
+
+        # Guard 3: Last message wasn't an email (e.g. Call or Chat)
+        if latest.channel != 'EMAIL'
+          Log.instance.info "   ⏭️  Skipping #{ticket.number}: Last message channel was '#{latest.channel}' (Only processing EMAIL)."
           update_cache(ticket.id, ticket.modified_time)
           return
         end
@@ -137,14 +142,13 @@ module TicketBot
       # 3. Fetch Full Context (Emails + Notes)
       messages = @client.fetch_full_conversation(ticket.id)
       
-      # ⚠️ LOGIC CHANGE: Filter to count ONLY Emails (exclude private notes)
-      # We rely on 'channel' being populated for threads (EMAIL) and nil for comments.
+      # Filter to count ONLY Emails
       email_count = messages.count { |m| m.channel == 'EMAIL' }
 
       # 4. Tracker Logic (L2 DB Check)
-      # Check if we have 5+ *new emails* since last run.
       unless force_update
         if @tracker.should_skip?(ticket.id, email_count)
+          Log.instance.info "   ⏭️  Skipping #{ticket.number}: Volume Threshold not met (Emails: #{email_count})."
           update_cache(ticket.id, ticket.modified_time)
           return
         end
@@ -153,19 +157,19 @@ module TicketBot
       Log.instance.info "🔥 Processing #{ticket.number} (Emails: #{email_count} | Total Context: #{messages.size})..."
 
       # 5. Analyze
-      # We pass ALL messages (including notes) so the AI has full context
       analysis = @analyzer.analyze(ticket, messages)
-      
+
       # 6. Post Result
       @client.post_private_comment(ticket.id, analysis)
       
-      # 7. Commit state (Save the EMAIL count, not total count)
+      # 7. Commit state
       @tracker.update_tracking(ticket.id, email_count)
       update_cache(ticket.id, ticket.modified_time)
       
       Log.instance.info "   ✅ Updated #{ticket.number}"
     rescue StandardError => e
       Log.instance.error "   💥 Error on #{ticket.number}: #{e.message}"
+      Log.instance.error e.backtrace.join("\n")
     end
 
     # --- Thread-Safe LRU Cache Helpers ---

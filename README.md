@@ -1,5 +1,3 @@
----
-
 # TicketBot: Autonomous Tier 3 Support Engine
 
 TicketBot is not a chatbot; it is a **headless, autonomous Senior Support Engineer**.

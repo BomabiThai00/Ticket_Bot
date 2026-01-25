@@ -28,4 +28,4 @@ tmp/
 
 ### --- OS Generated Files ---
 .DS_Store
-processed_tickets.db
+*.db

@@ -64,7 +64,7 @@ module TicketBot
           TicketBot::Log.instance.warn "   ⚠️ Hit safety limit of #{MAX_TICKETS_TO_FETCH} tickets. Stopping fetch."
           break
         end
-        url = "/tickets?assignee=#{my_agent_id}&status=Open&include=contacts&limit=50"
+        url = "/tickets?assignee=#{my_agent_id}&include=contacts&limit=50"
         # url = "/tickets?viewId=#{agent_id}&include=contacts&limit=#{limit}&from=#{from_index}"
         data = get(url)
         

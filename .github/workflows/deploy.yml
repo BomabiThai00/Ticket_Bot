@@ -1,0 +1,42 @@
+name: Deploy TicketBot
+
+on:
+  push:
+    branches: [ "master" ] # Trigger on every push to master
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Download your code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Log in to Azure
+      - name: Log in to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # 3. Log in to your Private Registry (ACR)
+      - name: Log in to ACR
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.ACR_NAME }}.azurecr.io
+          username: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientId }}
+          password: ${{ fromJson(secrets.AZURE_CREDENTIALS).clientSecret }}
+
+      # 4. Build Docker Image & Push to Azure
+      - name: Build and Push Image
+        run: |
+          docker build . -t ${{ secrets.ACR_NAME }}.azurecr.io/ticketbot:${{ github.sha }}
+          docker push ${{ secrets.ACR_NAME }}.azurecr.io/ticketbot:${{ github.sha }}
+
+      # 5. Tell the Bot to Update
+      - name: Deploy to App Service
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ secrets.APP_NAME }}
+          resource-group-name: ${{ secrets.RESOURCE_GROUP }}
+          images: ${{ secrets.ACR_NAME }}.azurecr.io/ticketbot:${{ github.sha }}

@@ -30,3 +30,5 @@ tmp/
 .DS_Store
 *.db
 *.db*
+
+! .github/workflows/*.yml

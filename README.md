@@ -1,175 +1,177 @@
-# TicketBot: AI-Powered Helpdesk Automation
+---
 
-TicketBot is a high-performance, stateless-yet-aware automation engine designed to analyze helpdesk tickets (Zoho Desk, HubSpot) using LLMs. It generates incremental summaries, Root Cause Analysis (RCA), and suggested next steps, posting them directly as private comments for support agents.
+# TicketBot: Autonomous Tier 3 Support Engine
 
-> **Production Status:** Active
-\
-> **Architecture:** Smart Polling (Optimized) / Event-Driven (Webhook Ready)
+TicketBot is not a chatbot; it is a **headless, autonomous Senior Support Engineer**.
+
+Unlike standard summarizers that blindly compress text, TicketBot employs a **Cognitive Chain-of-Thought (CoT)** architecture. It acts as a silent observer on your helpdesk (Zoho Desk), analyzing complex technical threads, filtering noise, and posting high-level **Root Cause Analyses (RCA)** and **Next Steps** directly into private engineering notes.
+
+It features a **Stateful Memory** system: by embedding encrypted state vectors in previous comments, it performs incremental analysis (Day 0 vs. Day N), allowing it to "remember" the technical trajectory of a ticket without requiring external vector databases.
 
 ---
 
-## Key Technical Features
+## ⚡ Key Technical Highlights
 
-* **Smart Polling Engine:**
-    * Utilizes a **Thread-Safe LRU Cache** (Limit: 1000) to memoize ticket states in memory.
-    * Performs **$O(1)$** complexity checks using `modified_time` timestamps, reducing API calls by 99% for idle tickets.
-    * Only fetches thread details when a physical change is detected on the remote platform.
-* **Robust Interaction Verification:**
-    * Implements a "Fail-Open" verification layer to ensure analysis triggers **only** on incoming emails from customers (`channel: EMAIL`, `direction: IN`).
-    * Filters out system notifications, agent replies, and internal state changes to prevent AI hallucination.
-* **Resilient State Tracking:**
-    * Backed by **SQLite (WAL Mode)** for persistent state tracking across restarts.
-    * Uses a "Difference Engine" logic: `(Current_Thread_Count - Last_Processed_Count) >= 5` to determine processing eligibility.
-* **Security & Privacy:**
-    * Built-in PII Sanitization (Regex-based scrubbing) before sending data to LLM.
-    * Uses `post_private_comment` to ensure AI notes remain internal-only.
+### 🧠 Cognitive Architecture (CoT)
+
+* **Internal Scratchpad:** The LLM does not just output an answer. It first populates a hidden `analysis_scratchpad` JSON field to filter out "Thank you" emails, validate evidence, and discard hallucinations before generating the final RCA.
+* **Stateful Incremental Updates:** The bot reads its own previous outputs (hidden JSON payloads in comments). It differentiates between a "Fresh Analysis" and a "State Update," allowing it to track **Frustration Velocity** and changing technical symptoms over time.
+
+### 🚀 High-Performance Polling
+
+* **O(1) Latency Checks:** The `Engine` implements a thread-safe **LRU Cache (Size: 1000)**. It checks the `modified_time` of a ticket against memory in  time, reducing API calls to the helpdesk provider by **99%** for idle tickets.
+* **Fail-Open Logic:** The engine is strictly event-driven. It triggers **only** on incoming signals (`direction: IN`, `channel: EMAIL`). It ignores internal noise, agent collisions, and system notifications.
+* **Volume Throttling:** To optimize LLM token usage, the `Tracker` enforces a "Difference Engine": processing triggers only when the delta of **new emails  5**, ensuring cost-efficiency on high-volume threads.
+
+### 🛡️ C-Level Optimization & Security
+
+* **O(N) Linear Parsing:** Replaced standard Regex HTML stripping with **`Loofah`** (C-extension). This prevents ReDoS (Regular Expression Denial of Service) and ensures linear parsing time even on massive log dumps (15k+ chars).
+* **Memory Safety:** The `ThreadAnalyzer` utilizes `reverse_each` iterators to traverse ticket history, preventing unnecessary array duplication and reducing Garbage Collection (GC) pressure.
+* **Frozen Regex Constants:** PII patterns (IPs, JWTs, Phones) are pre-compiled and frozen at boot time in `pii_sanitizer.rb` to maximize matching throughput.
+* **Zero-Trust PII Scrubbing:** All high-entropy secrets (Bearer Tokens, SIP URIs) and PII are redacted via a whitelist approach before the context window is constructed.
 
 ---
 
-## 🛠 Architecture
+## 🏗️ Architecture
 
-### The Optimization Loop (Polling Mode)
-Instead of naively fetching threads for every ticket ($O(N)$ API Load), TicketBot uses a tiered caching strategy:
-
-1.  **Level 1 (Memory):** Checks `modified_time` against an internal **LRU Hash Map**.
-    * *Match?* → **SKIP** (0 Latency, 0 API Calls).
-2.  **Level 2 (Metadata):** Fetches `GET /tickets/{id}/latestThread`.
-    * *Is Customer Email?* → **PROCEED**.
-    * *Is Agent Reply?* → **UPDATE CACHE & SKIP**.
-3.  **Level 3 (Database):** Checks `processed_tickets.db`.
-    * *Enough new data?* → **ANALYZE**.
-
-### Sequence Diagram
+The system follows a strict **Fetch-Verify-Analyze-Commit** loop, backed by an ACID-compliant SQLite database in WAL (Write-Ahead Logging) mode for concurrency.
 
 ```mermaid
 sequenceDiagram
     participant Engine
     participant Cache as LRU Cache (RAM)
-    participant Zoho as Zoho API
-    participant DB as SQLite Tracker
-    participant LLM as OpenAI/Azure
+    participant Zoho as Zoho/HubSpot API
+    participant Tracker as SQLite (WAL)
+    participant Analyzer as Thread Analyzer
+    participant LLM as Azure/OpenAI
 
-    Engine->>Zoho: Fetch Batch (100 Tickets)
-    loop Each Ticket
-        Engine->>Cache: Check modified_time
-        alt Not Changed
-            Cache-->>Engine: HIT (Skip)
-        else Changed
-            Engine->>Zoho: GET /latestThread
-            alt Is Customer Email?
-                Engine->>Zoho: GET /threads (Full Context)
-                Engine->>DB: Check Delta > 5 msgs
-                Engine->>LLM: Analyze(History)
-                LLM-->>Engine: JSON Summary
-                Engine->>Zoho: POST /comment
-                Engine->>DB: Update State
-                Engine->>Cache: Update Timestamp
-            else Agent/System
-                Engine->>Cache: Update Timestamp (Skip)
+    Engine->>Zoho: 1. Fetch Ticket Batch
+    loop Every Ticket
+        Engine->>Cache: 2. Check modified_time (O(1))
+        alt Cache Miss (Modified)
+            Engine->>Zoho: 3. Fetch Latest Thread Metadata
+            alt is Incoming Customer Email?
+                Engine->>Zoho: 4. Fetch FULL Conversation (Emails + Notes)
+                Engine->>Tracker: 5. Check Volume Delta (New Emails >= 5?)
+                
+                opt Delta Threshold Met
+                    Engine->>Analyzer: 6. Extract Previous State (Regex)
+                    Analyzer->>Analyzer: 7. Scrub PII & Sanitize HTML (Loofah)
+                    Analyzer->>LLM: 8. Generate Analysis (Chain of Thought)
+                    LLM-->>Engine: JSON Payload (RCA, Timeline, Next Steps)
+                    Engine->>Zoho: 9. Post Private Note (HTML + Hidden State)
+                    Engine->>Tracker: 10. Commit New State (ACID)
+                    Engine->>Cache: 11. Update LRU Key
+                end
             end
+        else Cache Hit
+            Cache-->>Engine: Skip (No-Op)
         end
     end
 
 ```
+
 ---
 
-## ⚙️ Installation & Setup
+## 📂 Project Structure
 
-### 1. Prerequisites
+The codebase utilizes the **Builder Pattern** for prompt construction and Service Objects for isolation.
 
-* Ruby 3.0+
-* SQLite3
-* Zoho Desk / HubSpot API Credentials
+```text
+lib/ticket_bot
+├── clients/
+│   ├── llm_client.rb          # Azure/OpenAI Adapter with Json Mode
+│   └── zoho_client.rb         # Resilient HTTP Client (Retries/Backoff)
+├── core/
+│   ├── configuration.rb       # Thread-safe Config Singleton
+│   ├── tracker.rb             # SQLite Wrapper (WAL Mode)
+│   └── logger.rb              # MultiIO Logging (File + Stdout)
+├── prompts/
+│   ├── schema.rb              # Strict JSON Output Schema
+│   └── support_engineer.rb    # [Builder Pattern] Constructs prompt based on State
+├── services/
+│   ├── pii_sanitizer.rb       # Regex-based PII Redaction
+│   └── thread_analyzer.rb     # The "Brain": State extraction & HTML Parsing
+└── engine.rb                  # The Orchestrator (Event Loop)
 
-### 2. Installation
+```
+
+---
+
+## 🛠️ Setup & Installation
+
+### 1. Dependencies
+
+Requires Ruby 3.0+ and SQLite3.
 
 ```bash
-git clone [https://github.com/your-repo/ticket_bot.git](https://github.com/your-repo/ticket_bot.git)
-cd ticket_bot
 bundle install
 
 ```
 
-### 3. Configuration (`.env`)
+### 2. Configuration
 
-Create a `.env` file in the root directory:
+The system relies on a `.env` file for credentials. It supports dual-stack LLM configuration (OpenAI or Azure).
 
-```bash
-# --- Platform Selection ---
-PLATFORM=zoho  # or 'hubspot'
+```env
+# --- Identity ---
+PLATFORM=zoho
+ZOHO_ORG_ID=123456789
 
-# --- Zoho Desk Credentials (OAuth Self Client) ---
-ZOHO_CLIENT_ID=1000.xxxxxxx
-ZOHO_CLIENT_SECRET=xxxxxxx
-ZOHO_REFRESH_TOKEN=1000.xxxxxxx.xxxxxxx  # Infinite lifespan token
-ZOHO_ORG_ID=  # Optional: Auto-detected on startup
+# --- OAuth Credentials ---
+ZOHO_CLIENT_ID=1000.xxxx
+ZOHO_CLIENT_SECRET=xxxx
+ZOHO_REFRESH_TOKEN=1000.xxxx
 
-# --- LLM Configuration ---
-LLM_PROVIDER=openai  # or 'azure'
-OPENAI_API_KEY=sk-xxxx
-# AZURE_OPENAI_ENDPOINT=... (if using Azure)
-
-# --- Engine Tuning ---
-CONCURRENCY_LIMIT=1  # Number of parallel threads
-LOG_LEVEL=INFO
+# --- LLM Engine (Azure Example) ---
+AZURE_TENANT_ID=xxxx-xxxx-xxxx
+AZURE_CLIENT_ID=xxxx-xxxx-xxxx
+AZURE_CLIENT_SECRET=xxxx
+# The client automatically handles Entra ID Token Refresh
 
 ```
 
 ---
 
-## Usage
+## 🕹️ Usage Modes
 
-### 1. Standard Production Mode (Polling)
+### 1. Standard Production (Polling)
 
-Runs the continuous loop. Ideal for background worker processes.
+The default mode runs a continuous, non-blocking event loop. It automatically manages concurrency via a `FixedThreadPool`.
 
 ```bash
 ./bin/start_bot
 
 ```
 
-### 2. Single Ticket Mode (Debugging)
+### 2. Forensic Debug Mode
 
-Forces the bot to process a specific ticket immediately, bypassing the database "Already Processed" check.
-
-```bash
-# Syntax: ./bin/start_bot [TICKET_NUMBER] --force_update
-./bin/start_bot 69174 --force_update
-
-```
-
-### 3. Webhook Mode (Event-Driven)
-
-*Note: Requires a public URL (ngrok or deployed server).*
-Starts a lightweight WEBrick server to listen for real-time `POST` events from Zoho/HubSpot.
+Force the bot to process a specific ticket immediately, bypassing the LRU Cache and Database "Already Processed" checks. Useful for testing prompts on complex historical tickets.
 
 ```bash
-MODE=webhook PORT=4567 ./bin/start_bot
+# Syntax: ./bin/start_bot [TICKET_ID] --force_update
+./bin/start_bot 549102 --force_update
 
 ```
 
 ---
 
-## Database Management
+## 💾 Database Management
 
-The bot maintains a local state in `processed_tickets.db`.
+TicketBot maintains a local `processed_tickets.db` to ensure processing idempotency. The database utilizes **WAL (Write-Ahead Logging)** to allow simultaneous reading (by the Engine) and writing (by the Tracker).
 
-**View Processing History:**
+**Inspect the current state:**
 
 ```bash
-sqlite3 processed_tickets.db "SELECT * FROM processed_history ORDER BY processed_at DESC LIMIT 10;"
+# Check the last 5 processed tickets and their thread counts
+sqlite3 processed_tickets.db "SELECT * FROM processed_history ORDER BY processed_at DESC LIMIT 5;"
 
 ```
 
-**Reset a Ticket (Force Re-processing next cycle):**
+**Manual State Reset:**
 
 ```bash
-sqlite3 processed_tickets.db "DELETE FROM processed_history WHERE ticket_id = 'YOUR_LONG_ID_HERE';"
+# Force re-analysis of a specific ticket in the next cycle
+sqlite3 processed_tickets.db "DELETE FROM processed_history WHERE ticket_id = '99999';"
 
 ```
-
----
-
-## License
-
-The MIT License (MIT)

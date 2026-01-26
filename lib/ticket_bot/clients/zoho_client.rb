@@ -10,7 +10,7 @@ module TicketBot
     MAX_RETRIES = 3
     MAX_TICKETS_TO_FETCH = 100
     
-    IGNORED_STATUSES = ["On Hold", "Closed"]
+    IGNORED_STATUSES = ["On Hold", "Closed", "Invalid"]
     
     def base_url
       tld = ENV['ZOHO_TOP_LEVEL_DOMAIN'] || 'com'

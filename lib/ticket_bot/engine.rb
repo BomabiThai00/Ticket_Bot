@@ -174,21 +174,27 @@ module TicketBot
 
     # --- Thread-Safe LRU Cache Helpers ---
 
-    def check_and_refresh_cache(id, time)
+    def check_and_refresh_cache(id, remote_time)
       @cache_lock.synchronize do
-        if @processed_cache[id] == time
+        cached_time = @processed_cache[id]
+        
+        if cached_time == remote_time
+          Log.instance.info "🕵️ CACHE VERIFY: Ticket #{id}"
+          Log.instance.info "   - Memory (Old): #{cached_time}"
+          Log.instance.info "   - API    (New): #{remote_time}"
+          Log.instance.info "   - Verdict: MATCH (This proves threadCount is still the same.)"
           @processed_cache.delete(id)
-          @processed_cache[id] = time
+          @processed_cache[id] = remote_time
           return true
         end
         false
       end
     end
 
-    def update_cache(id, time)
+    def update_cache(id, remote_time)
       @cache_lock.synchronize do
         @processed_cache.delete(id)
-        @processed_cache[id] = time
+        @processed_cache[id] = remote_time
         @processed_cache.shift if @processed_cache.size > CACHE_LIMIT
       end
     end

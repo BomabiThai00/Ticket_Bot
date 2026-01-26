@@ -88,13 +88,19 @@ module TicketBot
     end
 
     def map_ticket(t)
+      
+      current_count = t['threadCount'] || 0
+      version_signature = "threads_#{current_count}"
+
       TicketBot::Ticket.new(
         id: t['id'],
         number: t['ticketNumber'],
         subject: t['subject'],
         assignee_id: t['assigneeId'],
         description: t['description'],
-        modified_time: t['modifiedTime'] #Capture the timestamp
+        # We hijack the 'modified_time' field to store our Thread Count Signature
+        # # We construct a custom version string. If this string changes, the cache breaks.
+        modified_time: version_signature 
       )
     end
 

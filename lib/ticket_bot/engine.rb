@@ -154,6 +154,18 @@ module TicketBot
         end
       end
 
+      # Extract count from metadata signature "threads_123"
+      raw_count_sig = ticket.modified_time || "threads_0"
+      current_thread_count = raw_count_sig.split('_').last.to_i
+      # We use metadata_count as a proxy. If total interactions < 5, emails are definitely < 5.
+      unless force_update
+        if @tracker.should_skip?(ticket.id, current_thread_count)
+          Log.instance.info "   ⏭️  Skipping #{ticket.number}: Volume Threshold not met (Total: #{current_thread_count})."
+          update_cache(ticket.id, ticket.modified_time)
+          return
+        end
+      end
+
       Log.instance.info "🔥 Processing #{ticket.number} (Emails: #{email_count} | Total Context: #{messages.size})..."
 
       # 5. Analyze

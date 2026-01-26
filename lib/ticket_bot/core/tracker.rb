@@ -15,26 +15,26 @@ module TicketBot
       connect_and_configure_db
     end
 
-    def needs_processing?(ticket_id, remote_modified_at)
-      begin
-        row = execute_with_retry do
-          @db.get_first_row("SELECT processed_at FROM processed_history WHERE ticket_id = ?", ticket_id.to_s)
-        end
+    # def needs_processing?(ticket_id, remote_modified_at)
+    #   begin
+    #     row = execute_with_retry do
+    #       @db.get_first_row("SELECT processed_at FROM processed_history WHERE ticket_id = ?", ticket_id.to_s)
+    #     end
 
-        # If no record exists, we definitely need to process it
-        return true if row.nil?
+    #     # If no record exists, we definitely need to process it
+    #     return true if row.nil?
 
-        # Parse DB time
-        last_processed = Time.parse(row['processed_at'] + " UTC")
+    #     # Parse DB time
+    #     last_processed = Time.parse(row['processed_at'] + " UTC")
         
-        # Buffer: Add 1 second to DB time to avoid precision issues
-        # If Remote Time is newer than DB Time, we process.
-        Time.parse(remote_modified_at) > (last_processed + 1)
-      rescue StandardError => e
-        Log.instance.warn "⚠️ DB Check failed: #{e.message}. Defaulting to PROCESS."
-        true # Default to process on error
-      end
-    end
+    #     # Buffer: Add 1 second to DB time to avoid precision issues
+    #     # If Remote Time is newer than DB Time, we process.
+    #     Time.parse(remote_modified_at) > (last_processed + 1)
+    #   rescue StandardError => e
+    #     Log.instance.warn "⚠️ DB Check failed: #{e.message}. Defaulting to PROCESS."
+    #     true # Default to process on error
+    #   end
+    # end
 
     def should_skip?(ticket_id, current_thread_count)
       begin
@@ -45,9 +45,18 @@ module TicketBot
           )
         end
 
+
         if row.nil?
-           Log.instance.info "      [Tracker] New Ticket (Not in DB). Processing."
-           return false
+          # CASE: New Ticket
+          if current_thread_count < 5
+            Log.instance.info "      [Tracker] New Ticket (Vol: #{current_thread_count}). Tracking ONLY (Skipping LLM)."
+            # We only track it, and not post comment
+            update_tracking(ticket_id, current_thread_count) 
+            return true # Skip LLM
+          else
+            Log.instance.info "      [Tracker] New Ticket (Vol: #{current_thread_count}). Processing."
+            return false # Proceed to LLM
+          end
         end
 
         last_count = row['last_thread_count'].to_i

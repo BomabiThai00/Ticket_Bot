@@ -1,6 +1,7 @@
 require 'faraday'
 require 'json'
 require 'time'
+require 'loofah' 
 require_relative '../core/logger'
 require_relative '../core/models' 
 
@@ -37,6 +38,7 @@ module TicketBot
     def get_views; get('/views?module=tickets'); end
 
     # --- Fetch Logic ---
+
     def fetch_ticket_by_number(ticket_number)
       TicketBot::Log.instance.info "   🔍 Searching for Ticket ##{ticket_number}..."
       data = get("/tickets/search?ticketNumber=#{ticket_number}&limit=1")
@@ -64,15 +66,15 @@ module TicketBot
           TicketBot::Log.instance.warn "   ⚠️ Hit safety limit of #{MAX_TICKETS_TO_FETCH} tickets. Stopping fetch."
           break
         end
-        url = "/tickets?assignee=#{my_agent_id}&include=contacts&limit=50"
-        # url = "/tickets?viewId=#{agent_id}&include=contacts&limit=#{limit}&from=#{from_index}"
+
+        url = "/tickets?assignee=#{my_agent_id}&include=contacts&limit=50&from=#{from_index}"
         data = get(url)
         
         break unless data['data'] && !data['data'].empty?
 
         batch = data['data'].map do |t|
           next if IGNORED_STATUSES.include?(t['status'])
-          map_ticket(t)
+          map_ticket(t) # Uses Centralized Factory under private
         end.compact
 
         all_tickets.concat(batch)
@@ -87,34 +89,18 @@ module TicketBot
       []
     end
 
-    def map_ticket(t)
-      
-      current_count = t['threadCount'] || 0
-      version_signature = "threads_#{current_count}"
-
-      TicketBot::Ticket.new(
-        id: t['id'],
-        number: t['ticketNumber'],
-        subject: t['subject'],
-        assignee_id: t['assigneeId'],
-        description: t['description'],
-        # We hijack the 'modified_time' field to store our Thread Count Signature
-        # # We construct a custom version string. If this string changes, the cache breaks.
-        modified_time: version_signature 
-      )
-    end
-
-    # ---Check most recent activity type ---
+    # --- Check most recent activity type ---
     def fetch_latest_thread(ticket_id)
       data = get("/tickets/#{ticket_id}/latestThread")
       
       return nil unless data && data['id']
 
-      TicketBot::Message.new(
-        content: strip_html(data['summary']),
+      # Uses Unified Message Factory
+      build_message(
+        content: data['summary'], 
         direction: data['direction'], 
         channel: data['channel'],     
-        created_at: Time.parse(data['createdTime'])
+        created_time: data['createdTime']
       )
     rescue StandardError => e
       # 404 means no threads exist yet
@@ -124,51 +110,38 @@ module TicketBot
 
     # --- Conversation Fetching ---
     def fetch_full_conversation(ticket_id)
+      # Uses the new paginated methods
       threads = fetch_threads(ticket_id)
       comments = fetch_comments(ticket_id)
       (threads + comments).sort_by(&:created_at)
     end
 
     def fetch_threads(ticket_id)
-      begin
-        data = get("/tickets/#{ticket_id}/threads?limit=50")
-        return [] unless data['data']
-
-        data['data'].map do |m|
-          raw_body = m['content'].nil? || m['content'].empty? ? m['summary'] : m['content']
-          TicketBot::Message.new(
-            content: strip_html(raw_body),
-            direction: m['direction'],
-            channel: m['channel'], 
-            created_at: Time.parse(m['createdTime'])
-          )
-        end
-      rescue StandardError => e
-        TicketBot::Log.instance.error "   ❌ Failed threads for #{ticket_id}: #{e.message}"
-        []
+      fetch_paginated("/tickets/#{ticket_id}/threads") do |m|
+        # Fallback to summary if content is empty
+        raw_body = m['content'].to_s.empty? ? m['summary'] : m['content']
+        
+        build_message(
+          content: raw_body,
+          direction: m['direction'],
+          channel: m['channel'], 
+          created_time: m['createdTime']
+        )
       end
     end
 
     def fetch_comments(ticket_id)
-      begin
-        data = get("/tickets/#{ticket_id}/comments?limit=50")
-        return [] unless data['data']
-
-        data['data'].map do |c|
-          type = c.dig('commenter', 'type')
-          direction = (type == 'endUser') ? 'in' : 'out'
-          label = c['isPublic'] ? "💬 [Public Comment]" : "🔒 [Private Note]"
-          raw_body = c['content']
-          
-          TicketBot::Message.new(
-            content: "#{label} #{strip_html(raw_body)}",
-            direction: direction,
-            created_at: Time.parse(c['createdTime'])
-          )
-        end
-      rescue StandardError => e
-        TicketBot::Log.instance.error "   ❌ Failed comments for #{ticket_id}: #{e.message}"
-        []
+      fetch_paginated("/tickets/#{ticket_id}/comments") do |c|
+        type = c.dig('commenter', 'type')
+        direction = (type == 'endUser') ? 'in' : 'out'
+        label = c['isPublic'] ? "💬 [Public Comment]" : "🔒 [Private Note]"
+        
+        build_message(
+          content: "#{label} #{c['content']}",
+          direction: direction,
+          channel: nil, # Comments imply internal/web
+          created_time: c['createdTime']
+        )
       end
     end
 
@@ -180,6 +153,64 @@ module TicketBot
     end
 
     private
+
+    # --- FACTORIES (DRY) ---
+
+    def map_ticket(t)
+      current_count = t['threadCount'] || 0
+      # Version signature for caching
+      version_signature = "threads_#{current_count}"
+
+      TicketBot::Ticket.new(
+        id: t['id'],
+        number: t['ticketNumber'],
+        subject: t['subject'],
+        assignee_id: t['assigneeId'],
+        description: t['description'],
+        modified_time: version_signature 
+      )
+    end
+
+    def build_message(content:, direction:, channel:, created_time:)
+      TicketBot::Message.new(
+        content: strip_html(content),
+        direction: direction,
+        channel: channel,
+        created_at: Time.parse(created_time)
+      )
+    end
+
+    # --- HELPERS ---
+
+    def fetch_paginated(endpoint)
+      results = []
+      from_index = 1
+      limit = 50
+
+      loop do
+        # Handle existing query params if necessary
+        separator = endpoint.include?('?') ? '&' : '?'
+        url = "#{endpoint}#{separator}limit=#{limit}&from=#{from_index}"
+        
+        data = get(url)
+        
+        # 1. Guard: Stop if no data
+        break if data['data'].nil? || data['data'].empty?
+
+        # 2. Map: Apply the block (parsing logic) to each item
+        batch = data['data'].map { |item| yield(item) }
+        results.concat(batch)
+
+        # 3. Stop if end of list
+        break if data['data'].size < limit
+        from_index += limit
+      end
+
+      results
+    rescue StandardError => e
+      TicketBot::Log.instance.error "   ❌ Pagination Failed for #{endpoint}: #{e.message}"
+      results # Fail-Safe: Return partial results instead of crashing
+    end
 
     def get(path)
       with_retries { handle_response(connection.get(base_url + path)) }
@@ -237,7 +268,9 @@ module TicketBot
 
     def strip_html(html)
       return "" if html.nil?
-      html.to_s.gsub(/<[^>]*>/, " ").gsub(/\s+/, " ").strip
+      # OPTIMIZATION: Use Loofah (C-Extension) instead of Regex
+      # It is faster, safer (prevents ReDoS), and handles entities better.
+      Loofah.fragment(html).text(encode_special_chars: false).gsub(/\s+/, " ").strip
     end
   end
 end

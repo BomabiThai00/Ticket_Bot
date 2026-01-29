@@ -38,7 +38,7 @@ module TicketBot
       Log.instance.info "   🤖 Analyzing Ticket #{ticket.number} (Mode: #{previous_json_state ? 'Update' : 'Fresh'})..."
 
       # 5. EXECUTE LLM
-      raw_response = @llm.generate_response(prompt_builder.build, json_mode: true, temperature: 0.1)
+      raw_response = @llm.generate_response(prompt_builder.build, json_mode: true, temperature: 1)
       return if raw_response.nil?
 
       begin

@@ -11,7 +11,7 @@ require_relative 'services/thread_analyzer'
 
 module TicketBot
   class Engine
-    CONCURRENCY_LIMIT = 1
+    CONCURRENCY_LIMIT = 2
     CACHE_LIMIT = 1000
 
     def initialize(config, client)
@@ -95,7 +95,7 @@ module TicketBot
       tickets = @client.fetch_tickets(@config[:my_agent_id]) || []
       
       tickets.each do |ticket|
-        next if ticket.assignee_id != @config[:my_agent_id]
+        # next if ticket.assignee_id != @config[:my_agent_id]
         @pool.post { process_ticket_async(ticket) }
       end
     rescue StandardError => e

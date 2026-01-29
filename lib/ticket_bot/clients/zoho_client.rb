@@ -9,7 +9,7 @@ require_relative '../core/errors'
 module TicketBot
   class ZohoClient
     MAX_RETRIES = 3
-    MAX_TICKETS_TO_FETCH = 100
+    MAX_TICKETS_TO_FETCH = 200
     
     IGNORED_STATUSES = ["On Hold", "Closed", "Invalid"]
     
@@ -56,9 +56,9 @@ module TicketBot
     def fetch_tickets(my_agent_id)
       all_tickets = []
       from_index = 1
-      limit = 50
+      limit = 200
 
-      TicketBot::Log.instance.info "   🔄 Fetching tickets for Agent ID #{my_agent_id}..."
+      TicketBot::Log.instance.info "   🔄 Fetching All Open Tickets..."
 
       loop do
         if all_tickets.size >= MAX_TICKETS_TO_FETCH
@@ -66,7 +66,7 @@ module TicketBot
           break
         end
 
-        url = "/tickets?assignee=#{my_agent_id}&include=contacts&limit=50&from=#{from_index}"
+        url = "/tickets?status=Open&include=contacts&limit=50&from=#{from_index}"
         data = get(url)
         
         break unless data['data'] && !data['data'].empty?

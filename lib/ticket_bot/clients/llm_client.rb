@@ -10,9 +10,12 @@ module TicketBot
     AZURE_TOKEN_URL = "https://login.microsoftonline.com/%s/oauth2/v2.0/token"
     AZURE_SCOPE = "https://cognitiveservices.azure.com/.default" 
 
+    DEPLOYMENT_NAME = ENV['AZURE_DEPLOYMENT_NAME'] || "gpt-5.1-chat"
+    ENDPOINT_BASE   = ENV['AZURE_ENDPOINT_URL'] || "https://ticketbot-gpt.cognitiveservices.azure.com"
+
     PROVIDERS = {
       azure: {
-        url: "https://mbxc-mkfct6r7-swedencentral.cognitiveservices.azure.com/openai/deployments/gpt-4.1/chat/completions?api-version=2025-01-01-preview",
+        url: "#{ENDPOINT_BASE.chomp('/')}/openai/deployments/#{DEPLOYMENT_NAME}/chat/completions?api-version=2025-01-01-preview",
         adapter: :azure_adapter
       }
     }
@@ -30,7 +33,7 @@ module TicketBot
       @token_expires_at = Time.now
     end
 
-    def generate_response(prompt_text, json_mode: false, temperature: 0.2)
+    def generate_response(prompt_text, json_mode: false, temperature: 1)
       call_provider(:azure, prompt_text, json_mode, temperature)
     end
 
@@ -89,7 +92,6 @@ module TicketBot
     end
 
     def azure_adapter(prompt, json_mode, temp, _config)
-      # REFACTORED: Removed Markdown instructions.
       system_content = "You are an Expert Technical Support Engineer at Maqsam."
       system_content += " Please output valid JSON." if json_mode
 
@@ -99,7 +101,7 @@ module TicketBot
           { role: "user", content: prompt }
         ],
         temperature: temp,
-        max_tokens: 4000
+        max_completion_tokens: 8000
       }
       body[:response_format] = { type: "json_object" } if json_mode
       body

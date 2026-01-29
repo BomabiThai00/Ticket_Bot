@@ -4,7 +4,7 @@ require_relative 'logger'
 
 module TicketBot
   class Tracker
-    DB_FILE =  DB_FILE = ENV['DB_PATH'] || File.expand_path('../../../processed_tickets.db', __dir__)
+    DB_FILE = ENV['DB_PATH'] || File.expand_path('../../../processed_tickets.db', __dir__)
     
     # Retry settings for when database is locked 
     MAX_RETRIES = 5
@@ -14,27 +14,6 @@ module TicketBot
       @lock = Mutex.new
       connect_and_configure_db
     end
-
-    # def needs_processing?(ticket_id, remote_modified_at)
-    #   begin
-    #     row = execute_with_retry do
-    #       @db.get_first_row("SELECT processed_at FROM processed_history WHERE ticket_id = ?", ticket_id.to_s)
-    #     end
-
-    #     # If no record exists, we definitely need to process it
-    #     return true if row.nil?
-
-    #     # Parse DB time
-    #     last_processed = Time.parse(row['processed_at'] + " UTC")
-        
-    #     # Buffer: Add 1 second to DB time to avoid precision issues
-    #     # If Remote Time is newer than DB Time, we process.
-    #     Time.parse(remote_modified_at) > (last_processed + 1)
-    #   rescue StandardError => e
-    #     Log.instance.warn "⚠️ DB Check failed: #{e.message}. Defaulting to PROCESS."
-    #     true # Default to process on error
-    #   end
-    # end
 
     def should_skip?(ticket_id, current_thread_count)
       begin

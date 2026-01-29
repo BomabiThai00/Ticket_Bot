@@ -2,6 +2,7 @@ require 'faraday'
 require 'json'
 require 'time'
 require_relative '../core/logger'
+require_relative '../core/errors'
 
 module TicketBot
   class LlmClient
@@ -22,8 +23,7 @@ module TicketBot
       @client_secret = ENV['AZURE_CLIENT_SECRET']
       
       if [@tenant_id, @client_id, @client_secret].any? { |v| v.nil? || v.empty? }
-        Log.instance.error "🛑 FATAL: Missing Azure OAuth Credentials in .env."
-        abort("🛑 Script aborted due to missing configuration.") 
+        raise TicketBot::LlmError, "Missing Azure OAuth Credentials in .env" 
       end
 
       @access_token = nil
@@ -40,24 +40,21 @@ module TicketBot
       config = PROVIDERS[provider_name]
       token = fetch_oauth_token
 
-      conn = Faraday.new(ssl: { verify: false })
+      conn = Faraday.new(ssl: { verify: false }, request: { timeout: 120, open_timeout: 120 })
       body = send(config[:adapter], prompt, json_mode, temperature, config)
       
       response = conn.post(config[:url]) do |req|
         req.headers['Content-Type'] = 'application/json'
         req.headers['Authorization'] = "Bearer #{token}"
         req.body = body.to_json
+        
       end
 
-      if response.status == 401 || response.status == 403
-        Log.instance.error "🛑 FATAL: Azure rejected the Access Token (Status #{response.status})."
-        abort("🛑 Script aborted due to AI Authorization failure.")
-      end
-
-      parse_response(provider_name, response)
-    rescue StandardError => e
-      Log.instance.error "💥 #{provider_name} Connection Error: #{e.message}"
-      nil 
+      handle_provider_response(provider_name, response)
+    rescue Faraday::TimeoutError
+      raise TicketBot::LlmTransientError, "Azure Connection Timed Out"
+    rescue Faraday::ConnectionFailed => e
+      raise TicketBot::LlmTransientError, "Azure Connection Failed: #{e.message}"
     end
 
     def fetch_oauth_token
@@ -87,7 +84,7 @@ module TicketBot
         return @access_token
       else
         Log.instance.error "🛑 OAuth Token Failed. Body: #{resp.body}"
-        raise "OAuth Token Failed: Status #{resp.status}"
+        raise TicketBot::LlmError, "OAuth Token Failed (Status #{resp.status}): #{resp.body}"
       end
     end
 
@@ -108,23 +105,39 @@ module TicketBot
       body
     end
 
-    def parse_response(provider, response)
-      return nil if response.nil?
-
-      begin
-        data = JSON.parse(response.body)
-      rescue JSON::ParserError
-        Log.instance.error "❌ Response not JSON."
-        return nil
+    def handle_provider_response(provider, response)
+      # 1. Success Case
+      if response.success?
+        begin
+          data = JSON.parse(response.body)
+          content = data.dig('choices', 0, 'message', 'content')
+          
+          if content.nil? || content.empty?
+            raise TicketBot::LlmError, "Azure returned 200 OK but content was empty."
+          end
+          
+          return content
+        rescue JSON::ParserError
+          raise TicketBot::LlmError, "Failed to parse valid JSON from Azure response."
+        end
       end
-      
-      if response.status != 200
-        error_msg = data.dig('error', 'message') || "Unknown API Error"
-        Log.instance.error "❌ #{provider} API Error: #{error_msg}"
-        return nil
-      end
 
-      data.dig('choices', 0, 'message', 'content')
+      # 2. Error Cases (Unified Handling)
+      error_msg = "#{provider} API #{response.status}: #{response.body}"
+
+      case response.status
+      when 408, 429, 500..599
+        # Retryable errors (Server errors, Rate limits, Timeouts)
+        raise TicketBot::LlmTransientError, error_msg
+      when 401, 403
+        # Auth errors (Token rejected) - Critical
+        raise TicketBot::LlmError, "Authorization Failed: #{error_msg}"
+      when 400..499
+        # Client errors (Bad Request, Deployment Not Found)
+        raise TicketBot::LlmError, error_msg
+      else
+        raise TicketBot::LlmError, "Unknown Status: #{error_msg}"
+      end
     end
   end
 end

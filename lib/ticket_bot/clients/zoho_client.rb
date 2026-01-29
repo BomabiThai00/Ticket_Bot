@@ -4,10 +4,10 @@ require 'time'
 require 'loofah' 
 require_relative '../core/logger'
 require_relative '../core/models' 
+require_relative '../core/errors'
 
 module TicketBot
   class ZohoClient
-    # BASE_URL = 'https://desk.zoho.com/api/v1'
     MAX_RETRIES = 3
     MAX_TICKETS_TO_FETCH = 100
     
@@ -35,7 +35,6 @@ module TicketBot
     # --- Standard Getters ---
     def get_my_info; get('/myinfo'); end
     def get_organizations; get('/organizations'); end
-    def get_views; get('/views?module=tickets'); end
 
     # --- Fetch Logic ---
 
@@ -140,7 +139,7 @@ module TicketBot
           content: "#{label} #{c['content']}",
           direction: direction,
           channel: nil, # Comments imply internal/web
-          created_time: c['createdTime']
+          created_time: c['commentedTime']
         )
       end
     end
@@ -207,9 +206,10 @@ module TicketBot
       end
 
       results
+    rescue TicketBot::Error => e
+      raise e
     rescue StandardError => e
-      TicketBot::Log.instance.error "   ❌ Pagination Failed for #{endpoint}: #{e.message}"
-      results # Fail-Safe: Return partial results instead of crashing
+      raise TicketBot::ZohoError, "Pagination logic failed: #{e.message}"
     end
 
     def get(path)
@@ -224,27 +224,32 @@ module TicketBot
     end
 
     def handle_response(response)
-      # 1. Handle Empty Responses (204 No Content) gracefully
-      if response.body.nil? || response.body.strip.empty?
-        return {} 
+      # 1. Handle Empty/Success
+      return {} if response.body.nil? || response.body.strip.empty?
+      
+      # 2. Handle HTTP Errors
+      unless response.success?
+        error_msg = "Zoho #{response.status}: #{response.body}"
+        
+        case response.status
+        when 401
+          # If we are here, internal refresh logic already failed
+          @auth.send(:refresh_access_token!)
+          raise TicketBot::ZohoAuthError, "Forcing refresh... 401 Authentication Failed: #{error_msg}"
+        when 429, 500..599
+          raise TicketBot::ZohoTransientError, error_msg
+        when 400..499
+          raise TicketBot::ZohoError, error_msg 
+        else
+          raise TicketBot::ZohoError, error_msg
+        end
       end
 
-      # 2. Handle Authentication Errors
-      if response.status == 401
-        TicketBot::Log.instance.warn "⚠️  401 Unauthorized. Token expired/revoked. Forcing refresh..."
-        @auth.send(:refresh_access_token!)
-        raise Faraday::ServerError.new("Token Refreshed - Retrying")
-      elsif !response.success?
-        TicketBot::Log.instance.error "❌ API Error #{response.status}: #{response.body}"
-        raise "Zoho API Error: #{response.status}"
-      end
-
-      # 3. Safe Parse
+      # 3. Parse JSON
       begin
         JSON.parse(response.body)
       rescue JSON::ParserError => e
-        TicketBot::Log.instance.error "❌ Failed to parse JSON: #{e.message}"
-        return {}
+        raise TicketBot::ZohoError, "Invalid JSON response: #{e.message}"
       end
     end
 

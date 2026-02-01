@@ -5,12 +5,10 @@ require_relative 'core/logger'
 
 module TicketBot
   class Authenticator
-    # TOKEN_URL = 'https://accounts.zoho.com/oauth/v2/token'
     ENV_FILE_PATH = './.env'
 
     def self.token_url
-      tld = ENV['ZOHO_TOP_LEVEL_DOMAIN'] || 'com'
-      "https://accounts.zoho.#{tld}/oauth/v2/token"
+      "https://accounts.zoho.com/oauth/v2/token"
     end
 
     def initialize
@@ -18,7 +16,7 @@ module TicketBot
       @client_secret = ENV['ZOHO_CLIENT_SECRET']
       @refresh_token = ENV['ZOHO_REFRESH_TOKEN']
       
-      # 1. Access ZOHO_ACCESS_TOKEN from ENV
+      #  Access ZOHO_ACCESS_TOKEN from ENV
       @access_token = ENV['ZOHO_ACCESS_TOKEN']
       
       # We also need to load the expiry time to know if the ENV token is valid

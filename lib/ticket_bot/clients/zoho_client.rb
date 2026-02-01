@@ -14,8 +14,7 @@ module TicketBot
     IGNORED_STATUSES = ["On Hold", "Closed", "Invalid"]
     
     def base_url
-      tld = ENV['ZOHO_TOP_LEVEL_DOMAIN'] || 'com'
-      "https://desk.zoho.#{tld}/api/v1"
+      "https://desk.zoho.com/api/v1"
     end
 
     def initialize(config, authenticator)
@@ -273,8 +272,6 @@ module TicketBot
 
     def strip_html(html)
       return "" if html.nil?
-      # OPTIMIZATION: Use Loofah (C-Extension) instead of Regex
-      # It is faster, safer (prevents ReDoS), and handles entities better.
       Loofah.fragment(html).text(encode_special_chars: false).gsub(/\s+/, " ").strip
     end
   end

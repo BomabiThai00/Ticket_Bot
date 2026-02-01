@@ -108,7 +108,7 @@ module TicketBot
     end
 
     def handle_provider_response(provider, response)
-      # 1. Success Case
+      # Success Case
       if response.success?
         begin
           data = JSON.parse(response.body)
@@ -124,7 +124,7 @@ module TicketBot
         end
       end
 
-      # 2. Error Cases (Unified Handling)
+      # Error Cases (Unified Handling)
       error_msg = "#{provider} API #{response.status}: #{response.body}"
 
       case response.status
